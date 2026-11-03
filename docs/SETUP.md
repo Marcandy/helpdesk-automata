@@ -185,6 +185,82 @@ this guide. To reuse this guide's database, prefix a Make command with
 `COMPOSE_PROJECT_NAME=helpdesk-automata-baseline`. The direct script is preferred
 for first setup because the Makefile does not wait for database readiness.
 
+## Agent container
+
+The `agent` build target is a coding workspace for Claude Code, the project's
+AI coding tool. It sees only this project, runs as the non-root user `agent`, and
+keeps its Python environment in `/opt/venv`, apart from the host `.venv`.
+
+Build it from Git Bash:
+
+```bash
+docker build --target agent -t helpdesk-agent:boundaries .
+```
+
+Run it with this project as the only host folder:
+
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm -it \
+  -v "$(pwd -W)":/workspace \
+  -v /dev/null:/workspace/.env:ro \
+  -v helpdesk-agent-claude:/home/agent/.claude \
+  helpdesk-agent:boundaries
+```
+
+- `$(pwd -W)` gives Docker a Windows path. `MSYS_NO_PATHCONV=1` stops Git Bash
+  from rewriting the container paths.
+- `/dev/null:/workspace/.env:ro` hides the real `.env`. The agent sees an empty,
+  read-only file; the host file is untouched.
+- `helpdesk-agent-claude` is a named volume that keeps the Claude Code login
+  between runs. It holds no host files.
+- `--rm` deletes the container on exit.
+
+Never mount your home folder, Desktop, Downloads, `~/.ssh`, cloud credential
+folders, or the Docker socket.
+
+### Why hide `.env`
+
+Anything in `/workspace` is readable by the agent, and the agent's output can
+leave the machine. Treat the agent as untrusted with secrets: give it none it
+does not need. The app falls back to defaults when `.env` is empty, and
+environment variables override both, so pass throwaway values with `-e` if a
+task needs them. Keep real credentials out of the project folder entirely once
+the project has any.
+
+### What persists
+
+| Location | Lifetime | Use for |
+| --- | --- | --- |
+| `/workspace` | Persists; it is the host project folder | Source code and docs |
+| `/home/agent/.claude` | Persists in the `helpdesk-agent-claude` volume | CLI login and settings |
+| `/opt/venv` | Rebuilt with the image | Python dependencies |
+| `/tmp` and the rest of the container | Deleted on exit | Scratch files, downloads, caches |
+
+Remove the login volume with `docker volume rm helpdesk-agent-claude`.
+
+### Verify the boundary
+
+Run these inside the container:
+
+```bash
+id -un                      # agent
+ls -A /workspace            # project files
+wc -c < /workspace/.env     # 0
+grep " /workspace " /proc/self/mountinfo   # one bind mount: this project
+ls -A ~/.ssh /mnt /Users 2>&1              # missing or empty
+echo scratch > /tmp/scratch && echo keep > /workspace/step4-keep
+```
+
+Exit and start a new container: `/workspace/step4-keep` remains and
+`/tmp/scratch` is gone. Delete `step4-keep` afterwards.
+
+Verified on November 3, 2026, with Docker Desktop 29.8.2 on Windows. Each check
+gave the expected result. The only host mount was this project. `~/.ssh`, `C:\`,
+`/Users`, and the Docker socket were absent; `/root` was unreadable; no secrets
+appeared in environment variables. The masked `.env` read as 0 bytes inside the
+container while the host file was unchanged. The login volume kept a test file
+across runs. Running the app or tests inside the container was not checked.
+
 ## CI before merging to main
 
 The inherited `tests.yml` and `type_check.yml` run on pushes, use Ubuntu and

@@ -47,7 +47,7 @@ CMD ["/venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000",
 # Interactive coding workspace, built with: docker build --target agent .
 FROM base AS agent
 COPY --from=ghcr.io/astral-sh/uv:0.9.2 /uv /uvx /usr/local/bin/
-# Node/npm support the course CLIs; application dependencies still use uv.
+# Node/npm support Claude Code; application dependencies still use uv.
 COPY --from=agent-node /usr/local/bin/node /usr/local/bin/node
 COPY --from=agent-node /usr/local/lib/node_modules /usr/local/lib/node_modules
 
@@ -68,15 +68,20 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     UV_HTTP_TIMEOUT=120 uv sync --locked --dev --python 3.14
 
 ARG CLAUDE_CODE_VERSION=2.1.312
-ARG OPENCODE_VERSION=1.19.4
-RUN npm install -g \
-    "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-    "opencode-ai@${OPENCODE_VERSION}"
+RUN npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 
 # ngrok is deferred until needed. Missing course settings/statusline/entrypoint
-# files are not copied; the CLIs use their defaults and Bash starts directly.
-RUN mkdir -p /root/.claude \
-    && printf '\nalias ll="ls -alF"\n' >> /root/.bashrc
+# files are not copied; Claude Code uses its defaults and Bash starts directly.
+# Run as a non-root user. ~/.claude exists here so a mounted login volume
+# inherits agent ownership instead of root.
+RUN groupadd --gid 1000 agent \
+    && useradd --uid 1000 --gid agent --create-home --shell /bin/bash agent \
+    && mkdir -p /home/agent/.claude \
+    && printf '\nalias ll="ls -alF"\n' >> /home/agent/.bashrc \
+    && chown -R agent:agent /workspace /opt/venv /home/agent
+
+ENV HOME=/home/agent
+USER agent
 CMD ["/bin/bash"]
 
 # Preserve the existing API startup for ordinary builds and the publishing CI.
