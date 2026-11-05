@@ -200,7 +200,7 @@ docker build --target agent -t helpdesk-agent:boundaries .
 Run it with this project as the only host folder:
 
 ```bash
-MSYS_NO_PATHCONV=1 docker run --rm -it \
+MSYS_NO_PATHCONV=1 docker run --rm -it --network bridge \
   -v "$(pwd -W)":/workspace \
   -v /dev/null:/workspace/.env:ro \
   -v helpdesk-agent-claude:/home/agent/.claude \
@@ -214,6 +214,10 @@ MSYS_NO_PATHCONV=1 docker run --rm -it \
 - `helpdesk-agent-claude` is a named volume that keeps the Claude Code login
   between runs. It holds no host files.
 - `--rm` deletes the container on exit.
+- `--network bridge` is Docker's default network, written out so the choice
+  is explicit. The container can reach the internet, which Claude Code needs
+  to reach Anthropic. No ports are published, so nothing on your PC or
+  network can connect into it.
 
 Never mount your home folder, Desktop, Downloads, `~/.ssh`, cloud credential
 folders, or the Docker socket.
@@ -260,6 +264,119 @@ gave the expected result. The only host mount was this project. `~/.ssh`, `C:\`,
 appeared in environment variables. The masked `.env` read as 0 bytes inside the
 container while the host file was unchanged. The login volume kept a test file
 across runs. Running the app or tests inside the container was not checked.
+
+### Smoke test
+
+Run on November 3, 2026. The container was started with the run command above,
+named so its changes could be inspected with `docker diff` from a second
+terminal. It omitted `--network bridge`, which is Docker's default:
+
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm -it --name helpdesk-smoke \
+  -v "$(pwd -W)":/workspace \
+  -v /dev/null:/workspace/.env:ro \
+  -v helpdesk-agent-claude:/home/agent/.claude \
+  helpdesk-agent:boundaries
+```
+
+Prompt given to Claude Code:
+
+> Summarize this repository's structure: main folders, what each holds, how
+> to run tests, and what features exist versus are planned. Write the summary
+> to /workspace/agent-summary.md. Do not modify, create, or delete any other
+> file.
+
+Each command Claude requested was approved by hand. All were reads inside
+`/workspace`, such as `grep` on `app/auth/views.py`, plus the write to
+`agent-summary.md`.
+
+Checks on the host after exiting the container:
+
+```text
+$ docker ps -a --filter name=helpdesk-smoke
+CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
+
+$ head -5 agent-summary.md
+# Helpdesk Automata — repository summary
+
+An async FastAPI + PostgreSQL API intended for managing support tickets and
+automating support workflows. It is a fork of rafsaf's MIT-licensed
+`minimal-fastapi-postgres-template`; almost all application code is still the
+
+$ git status --short
+?? "Dockerfile copy"
+?? agent-summary.md
+
+$ git diff --stat
+```
+
+Result: pass. The container was deleted on exit, the summary persisted on the
+host, and no other project file changed. The summary was reviewed and is
+accurate; it correctly reports ticket features as planned, not built.
+
+### Security decisions
+
+These answers are provisional for the first setup and will change as the
+project grows. Add tools, files, credentials, or network access to the
+container only when a real task needs them.
+
+**Why did you mount only this folder?**
+I mounted only the helpdesk-automata folder so the agent can see and change
+this project and nothing else on my computer. The container's tools come from
+the Docker image; the mount decides which of my files it can reach. My home
+folder, SSH keys, other projects, and credential folders are not mounted, so
+the agent cannot read or change them. I verified this: the only host mount was
+this project, and `~/.ssh`, `C:\`, and `/Users` were not visible inside the
+container.
+
+**What did you choose to keep ephemeral?**
+I kept the container itself ephemeral. Each run creates a new container from
+the same image, and `--rm` deletes it on exit. That removes `/tmp`, caches,
+downloads, and anything the agent installed or changed outside the mounted
+folders, so every session starts from the same known state. I tested this: a
+file written to `/tmp` was gone after a restart.
+
+**What did you choose to persist?**
+I persist only two things. The project code persists because `/workspace` is
+my real project folder, so the agent's work survives the container. The Claude
+Code login persists in a separate named volume, `helpdesk-agent-claude`, so I
+stay signed in with the LaunchCode account between runs; that volume holds no
+other host files. I deliberately did not persist `.env`. It is never in the
+image, because the Dockerfile copies only specific files, and it is masked at
+runtime by an empty, read-only file mounted over `/workspace/.env`. The real
+file stays on my PC, unchanged. Dependencies are fixed in the image and change
+only when I rebuild it.
+
+**What dependencies did you include in your extended Docker image?**
+Compared with the course's Dockerfile, my image adds no new dependencies; it
+already included what the project needs: Python 3.14, uv, the project's locked
+packages (including pytest, Ruff, and mypy), Node 24, and Claude Code 2.1.312.
+I removed OpenCode because Claude Code is my only agent. My changes were to
+configuration instead: the agent runs as a non-root user, and the agent
+workspace is a build target in the project's single Dockerfile.
+
+**What did your smoke test prove?**
+The smoke test proved the agent works on this project from inside the
+container. Claude Code read the repo, wrote an accurate summary to
+`/workspace/agent-summary.md`, and that file was still on my PC after the
+container was deleted. `git status` showed it as the only new file, and
+`git diff --stat` was empty, so no existing file changed. `docker ps -a` showed
+the container was gone. The test showed the agent stayed inside its boundary,
+but not that it couldn't leave it: I told it to write one file and approved
+each action by hand. The earlier boundary test showed the only host folder
+mounted was this project.
+
+**What risks remain?**
+The biggest remaining risk is that the agent can change anything in
+`/workspace`, including `.git`. A modified Git hook or script would run on my
+PC the next time I commit or run it, so I review changes before running
+anything the agent touched. The network is open, so the agent could send
+project code out or be misled by content it reads. Hiding `.env` depends on
+including the mask in every run command, and new secret files wouldn't be
+covered; the project also lacks a `.dockerignore`. Finally, safety relies on my
+reviewing each action, and base image tags can change between rebuilds. These
+are acceptable for a first setup with no production secrets, and I'll revisit
+them as the course goes on.
 
 ## CI before merging to main
 
